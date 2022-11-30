@@ -1,0 +1,6 @@
+{
+    "files.associations": {
+        "csapp.h": "c",
+        "memory.h": "c"
+    }
+}
