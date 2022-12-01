@@ -12,14 +12,35 @@
 
 #include "csapp.h"
 
-/* Header를 위한 문자열 정의*/
+#include <memory.h>
+#include <errno.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <netdb.h>
+
+#include <openssl/crypto.h>
+#include <openssl/x509.h>
+#include <openssl/pem.h>
+#include <openssl/ssl.h>
+#include <openssl/err.h>
+ 
+#define CHK_NULL(x) if((x) == NULL) exit(1);
+#define CHK_ERR(err, s) if((err) == -1) { perror(s); exit(1); }
+#define CHK_SSL(err) if((err) == -1) { ERR_print_errors_fp(stderr); exit(2); }
+
+
 static const char *user_agent_hdr = "User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:10.0.3) Gecko/20120305 Firefox/10.0.3\r\n";
 static const char *conn_hdr = "Connection: close\r\n";
 static const char *prox_hdr = "Proxy-Connection: close\r\n";
 static const char *host_hdr_format = "Host: %s\r\n";
-static const char *requestlint_hdr_format = "%s %s %s\r\n";
-static const char *requestlint_hdr_Connect_format = "%s %s:%d %s\r\n";
+static const char *requestlint_hdr_format = "%s %s HTTP/1.1\r\n";
+static const char *requestlint_hdr_format_2 = "%s %s:%d HTTP/1.1\r\n";
 static const char *endof_hdr = "\r\n";
+
+
+static const char *connect_key = "CONNECT";
 
 static const char *connection_key = "Connection";
 static const char *user_agent_key= "User-Agent";
@@ -29,12 +50,12 @@ static const char *host_key = "Host";
 /*
  * Function prototypes
  */
-void parse_uri(char *HTTP,char *method, char *hostname,char *pathname,int *port, char* HTTP_Type ,char *uri);
+void parse_uri(char *HTTP,char *method, char *hostname,char *pathname,int *port, char *uri);
 void format_log_entry(char *logstring, struct sockaddr_in *sockaddr, char *uri, char *hostname, int port);
 
 void serve_static(int);
 void serve_connect(int fd,int fd2,char *HTTP, char *hostname);
-void build_http_header(char *http_header,char *method,char *hostname,char *path,char *HTTP_Type,int port,rio_t *client_rio);
+void build_http_header(char *http_header,char *method,char *hostname,char *path,int port,rio_t *client_rio);
 void *thread(void *vargp);
 
 /* 
@@ -52,66 +73,66 @@ int main(int argc, char **argv)
     fprintf(stderr, "Usage: %s <port number>\n", argv[0]);
     exit(0);
     }
-    /*
-     * Client와 연결
-     */
+
     listenfd = Open_listenfd(atoi(argv[1]));
     while(1) {
         clientlen = sizeof(struct sockaddr_storage);
         connfd = Accept(listenfd, (SA *)&clientaddr, &clientlen);
 
-        Pthread_create(&tid,NULL,thread,(void *)connfd); // Thread를 만들어 Concurrunt programming 수행
+        Pthread_create(&tid,NULL,thread,(void *)connfd);
+        // printf("%d %s\n",connfd,"Accepted");
     }
+
+
     exit(0);
 }
 
-/* 
- * Thread가 생성되면서 시행할 함수
- * Thread를 detach 시켜주고 Client에게 받아온 정보를 활용하여 serve_static 함수로 host에 연결함.
- */
 void *thread(void *vargp){
     int connfd = (int)vargp;
     Pthread_detach(pthread_self());
     serve_static(connfd);
     Close(connfd);
 }
-/* host에 연결하고 serve_connect 함수로 서버에게 요청을 전송함.*/
+
 void serve_static(int fd)
 {
-    char buf[MAXBUF], sbuf[MAXBUF];;
+    char buf[MAXBUF];
     int port;
     int clientfd;
     char HTTP[MAXBUF];
     char HTTP_request[MAXBUF]="\0";
     char uri[MAXBUF];
-    char hostname[MAXLINE], pathname[MAXLINE], method[MAXLINE],HTTP_Type[MAXLINE];
+    char hostname[MAXLINE], pathname[MAXLINE], method[MAXLINE];
     rio_t rio;
     struct sockaddr_in sockaddr;
-    int n;
-    /* Parsing and create request */
+
     Rio_readinitb(&rio,fd);
-    if((n=Rio_readlineb(&rio,HTTP,MAXBUF))==0)
-        exit(0);
 
-    parse_uri(HTTP,method,hostname,pathname,&port,HTTP_Type,uri);
-    if (strcasecmp(method,"CONNECT")==0)
+    Rio_readlineb(&rio,HTTP,MAXBUF);
+    printf("%s",HTTP);fflush(stdout);
+    fflush(stdout);
+    parse_uri(HTTP,method,hostname,pathname,&port,uri);
+    build_http_header(HTTP_request,method,hostname,pathname,port,&rio);
+    
+    if (strcmp(method,connect_key)==0)
     {
-        return;
+        clientfd= Open_clientfd(hostname,port);
+        ssl_connect()
     }
-
-    build_http_header(HTTP_request,method,hostname,pathname,HTTP_Type,port,&rio);
-    clientfd= Open_clientfd(hostname,port);
-    serve_connect(clientfd,fd,HTTP_request,hostname);
+    else
+    {
+        clientfd= Open_clientfd(hostname,port);
+        serve_connect(clientfd,fd,HTTP_request,hostname);
+    }
     Close(clientfd);
-
-    /* Log print */
     memset(&sockaddr,0, sizeof(sockaddr));
     format_log_entry(buf,&sockaddr,uri,hostname,port);
     printf("%s",buf);
+    printf("Finished");
     fflush(stdout);
+    
 }   
 
-/* 서버에게 요청을 전송하고 server에서 온 데이터를 client에게 출력함.*/
 void serve_connect(int fd,int fd2,char *HTTP, char *hostname)
 {
     rio_t rio;
@@ -120,26 +141,51 @@ void serve_connect(int fd,int fd2,char *HTTP, char *hostname)
 
     Rio_readinitb(&rio,fd);
     Rio_writen(fd,HTTP,strlen(HTTP));
+    printf("%s",HTTP);
     while((n=Rio_readlineb(&rio,buf,MAXBUF))!=0)
     {
-        Rio_writen(fd2,buf,n);
+        printf("buf == %s",buf); fflush(stdout);
+        // Rio_writen(fd2,buf,n);
     };
 }
 
 
-/* client에게 온 요청을 서버 전송양식으로 바꾸어 주기 위한 함수 */
-void build_http_header(char *http_header,char *method,char *hostname,char *path,char *HTTPType,int port,rio_t *client_rio)
+void sslconnect()
+{
+
+    int err;
+    int sd;
+    struct sockaddr_in sa;
+   
+    /* SSL 관련 정보를 관리할 구조체를 선언한다. */
+    SSL_CTX   *ctx;
+    SSL     *ssl;
+    X509                    *server_cert;
+    char                    *str;
+    char                    buf[4096];
+    SSL_METHOD    *meth;
+   
+    /* 암호화 통신을 위한 초기화 작업을 수행한다. */
+    SSL_load_error_strings();
+    SSLeay_add_ssl_algorithms();
+    meth = SSLv3_client_method();
+    ctx = SSL_CTX_new(meth);
+    CHK_NULL(ctx);
+
+}
+
+void build_http_header(char *http_header,char *method,char *hostname,char *path,int port,rio_t *client_rio)
 {
     char buf[MAXLINE],request_hdr[MAXLINE],other_hdr[MAXLINE],host_hdr[MAXLINE];
-    /* request line
-     * method와 path를 이용하여 request 문장을 생성
-     */
-    if (strcasecmp(method,"CONNECT")==0)
+    /*request line*/
+    if (strcmp(method,connect_key)==0)
     {
-        sprintf(request_hdr,requestlint_hdr_Connect_format,method,hostname,port,HTTPType);
+        sprintf(request_hdr,requestlint_hdr_format_2,method,hostname,port);
     }
     else
-        sprintf(request_hdr,requestlint_hdr_format,method,path,HTTPType);
+    {
+        sprintf(request_hdr,requestlint_hdr_format,method,path);
+    }
     /*get other request header for client rio and change it */
     while(Rio_readlineb(client_rio,buf,MAXLINE)>0)
     {
@@ -151,17 +197,26 @@ void build_http_header(char *http_header,char *method,char *hostname,char *path,
             continue;
         }
 
-        if(!strncasecmp(buf,connection_key,strlen(connection_key)) /* Connection*/
-                &&!strncasecmp(buf,proxy_connection_key,strlen(proxy_connection_key)) /* Proxy Connection*/
-                &&!strncasecmp(buf,user_agent_key,strlen(user_agent_key))) /*user_agent*/
+        if(!strncasecmp(buf,connection_key,strlen(connection_key))
+                &&!strncasecmp(buf,proxy_connection_key,strlen(proxy_connection_key))
+                &&!strncasecmp(buf,user_agent_key,strlen(user_agent_key)))
         
         {
-            strcat(other_hdr,buf); /* 다른 헤더들은 그대로 전송*/
+            strcat(other_hdr,buf);
         }
     }
-    if(strlen(host_hdr)==0) /* 만약 호스트헤더가 없으면 호스트 헤더를 새로 생성*/
+    if(strlen(host_hdr)==0)
     {
         sprintf(host_hdr,host_hdr_format,hostname);
+    }
+    if (strcmp(method,connect_key)==0)
+    {
+        sprintf(http_header,"%s%s%s",
+            request_hdr,
+            host_hdr,
+            endof_hdr);
+        return;
+
     }
     sprintf(http_header,"%s%s%s%s%s%s%s",
             request_hdr,
@@ -183,7 +238,7 @@ void build_http_header(char *http_header,char *method,char *hostname,char *path,
  * pathname must already be allocated and should be at least MAXLINE
  * bytes. Return -1 if there are any problems.
  */
-void parse_uri(char *HTTP,char *method, char *hostname,char *pathname,int *port,char* HTTP_Type, char * uri)
+void parse_uri(char *HTTP,char *method, char *hostname,char *pathname,int *port, char * uri)
 {
     *pathname = '/';
     
@@ -191,17 +246,16 @@ void parse_uri(char *HTTP,char *method, char *hostname,char *pathname,int *port,
     
     char* pos = strstr(HTTP," ");
     *pos = '\0';
-    sscanf(HTTP,"%s",method); /* method 분리*/
+    sscanf(HTTP,"%s",method);
     pos++;
 
     char* pos4 = strstr(pos," ");
     *pos4 = '\0';
-    sscanf(pos4+1,"%s",HTTP_Type);
     sscanf(pos,"%s",uri);
     char* pos3 = strstr(pos,"//");
-    pos = pos3!=NULL? pos3+2:pos; /* :// 를 이용해서 있으면 분리 없으면 그대로*/
+    pos = pos3!=NULL? pos3+2:pos;
 
-    char* pos2 = strstr(pos,":"); /* : 를 이용해서 포트와 호스트네임 path를 분리 */
+    char* pos2 = strstr(pos,":");
     if(pos2!=NULL)
     {
         *pos2 = '\0';
@@ -252,10 +306,6 @@ void format_log_entry(char *logstring, struct sockaddr_in *sockaddr,
      * returns a pointer to a static variable (Ch 13, CS:APP).
      */
 
-
-    /* 
-     * sockect_in을 사용해서 로그 출력
-     */
     if ((hp = gethostbyname(hostname)) == NULL)
         return ;
     sockaddr->sin_family = AF_INET;

@@ -14,10 +14,11 @@
 
 /* Header를 위한 문자열 정의*/
 static const char *user_agent_hdr = "User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:10.0.3) Gecko/20120305 Firefox/10.0.3\r\n";
-static const char *conn_hdr = "Connection: close\r\n";
+static const char *conn_hdr = "Connection: Keep-alive\r\n";
 static const char *prox_hdr = "Proxy-Connection: close\r\n";
 static const char *host_hdr_format = "Host: %s\r\n";
 static const char *requestlint_hdr_format = "%s %s HTTP/1.1\r\n";
+static const char *requestlint_hdr_Connect_format = "%s %s:%d HTTP/1.1\r\n";
 static const char *endof_hdr = "\r\n";
 
 static const char *connection_key = "Connection";
@@ -61,8 +62,6 @@ int main(int argc, char **argv)
 
         Pthread_create(&tid,NULL,thread,(void *)connfd); // Thread를 만들어 Concurrunt programming 수행
     }
-
-
     exit(0);
 }
 
@@ -88,11 +87,16 @@ void serve_static(int fd)
     char hostname[MAXLINE], pathname[MAXLINE], method[MAXLINE];
     rio_t rio;
     struct sockaddr_in sockaddr;
-
+    int n;
     /* Parsing and create request */
     Rio_readinitb(&rio,fd);
-    Rio_readlineb(&rio,HTTP,MAXBUF);
+    if((n=Rio_readlineb(&rio,HTTP,MAXBUF))==0)
+        exit(0);
     parse_uri(HTTP,method,hostname,pathname,&port,uri);
+    if (strcasecmp(method,"CONNECT")==0)
+    {
+        return;
+    }
     build_http_header(HTTP_request,method,hostname,pathname,port,&rio);
     clientfd= Open_clientfd(hostname,port);
     serve_connect(clientfd,fd,HTTP_request,hostname);
@@ -104,7 +108,6 @@ void serve_static(int fd)
     printf("%s",buf);
     fflush(stdout);
 }   
-
 
 /* 서버에게 요청을 전송하고 server에서 온 데이터를 client에게 출력함.*/
 void serve_connect(int fd,int fd2,char *HTTP, char *hostname)
@@ -129,7 +132,12 @@ void build_http_header(char *http_header,char *method,char *hostname,char *path,
     /* request line
      * method와 path를 이용하여 request 문장을 생성
      */
-    sprintf(request_hdr,requestlint_hdr_format,method,path);
+    if (strcasecmp(method,"CONNECT")==0)
+    {
+        sprintf(request_hdr,requestlint_hdr_Connect_format,method,hostname,port);
+    }
+    else
+        sprintf(request_hdr,requestlint_hdr_format,method,path);
     /*get other request header for client rio and change it */
     while(Rio_readlineb(client_rio,buf,MAXLINE)>0)
     {
