@@ -12,7 +12,7 @@
 
 #include "csapp.h"
 
-
+/* Header를 위한 문자열 정의*/
 static const char *user_agent_hdr = "User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:10.0.3) Gecko/20120305 Firefox/10.0.3\r\n";
 static const char *conn_hdr = "Connection: close\r\n";
 static const char *prox_hdr = "Proxy-Connection: close\r\n";
@@ -51,27 +51,32 @@ int main(int argc, char **argv)
     fprintf(stderr, "Usage: %s <port number>\n", argv[0]);
     exit(0);
     }
-
+    /*
+     * Client와 연결
+     */
     listenfd = Open_listenfd(atoi(argv[1]));
     while(1) {
         clientlen = sizeof(struct sockaddr_storage);
         connfd = Accept(listenfd, (SA *)&clientaddr, &clientlen);
 
-        Pthread_create(&tid,NULL,thread,(void *)connfd);
-        // printf("%d %s\n",connfd,"Accepted");
+        Pthread_create(&tid,NULL,thread,(void *)connfd); // Thread를 만들어 Concurrunt programming 수행
     }
 
 
     exit(0);
 }
 
+/* 
+ * Thread가 생성되면서 시행할 함수
+ * Thread를 detach 시켜주고 Client에게 받아온 정보를 활용하여 serve_static 함수로 host에 연결함.
+ */
 void *thread(void *vargp){
     int connfd = (int)vargp;
     Pthread_detach(pthread_self());
     serve_static(connfd);
     Close(connfd);
 }
-
+/* host에 연결하고 serve_connect 함수로 서버에게 요청을 전송함.*/
 void serve_static(int fd)
 {
     char buf[MAXBUF];
@@ -84,21 +89,24 @@ void serve_static(int fd)
     rio_t rio;
     struct sockaddr_in sockaddr;
 
+    /* Parsing and create request */
     Rio_readinitb(&rio,fd);
-
     Rio_readlineb(&rio,HTTP,MAXBUF);
-    fflush(stdout);
     parse_uri(HTTP,method,hostname,pathname,&port,uri);
     build_http_header(HTTP_request,method,hostname,pathname,port,&rio);
     clientfd= Open_clientfd(hostname,port);
     serve_connect(clientfd,fd,HTTP_request,hostname);
     Close(clientfd);
+
+    /* Log print */
     memset(&sockaddr,0, sizeof(sockaddr));
     format_log_entry(buf,&sockaddr,uri,hostname,port);
     printf("%s",buf);
     fflush(stdout);
 }   
 
+
+/* 서버에게 요청을 전송하고 server에서 온 데이터를 client에게 출력함.*/
 void serve_connect(int fd,int fd2,char *HTTP, char *hostname)
 {
     rio_t rio;
@@ -113,10 +121,14 @@ void serve_connect(int fd,int fd2,char *HTTP, char *hostname)
     };
 }
 
+
+/* client에게 온 요청을 서버 전송양식으로 바꾸어 주기 위한 함수 */
 void build_http_header(char *http_header,char *method,char *hostname,char *path,int port,rio_t *client_rio)
 {
     char buf[MAXLINE],request_hdr[MAXLINE],other_hdr[MAXLINE],host_hdr[MAXLINE];
-    /*request line*/
+    /* request line
+     * method와 path를 이용하여 request 문장을 생성
+     */
     sprintf(request_hdr,requestlint_hdr_format,method,path);
     /*get other request header for client rio and change it */
     while(Rio_readlineb(client_rio,buf,MAXLINE)>0)
@@ -129,15 +141,15 @@ void build_http_header(char *http_header,char *method,char *hostname,char *path,
             continue;
         }
 
-        if(!strncasecmp(buf,connection_key,strlen(connection_key))
-                &&!strncasecmp(buf,proxy_connection_key,strlen(proxy_connection_key))
-                &&!strncasecmp(buf,user_agent_key,strlen(user_agent_key)))
+        if(!strncasecmp(buf,connection_key,strlen(connection_key)) /* Connection*/
+                &&!strncasecmp(buf,proxy_connection_key,strlen(proxy_connection_key)) /* Proxy Connection*/
+                &&!strncasecmp(buf,user_agent_key,strlen(user_agent_key))) /*user_agent*/
         
         {
-            strcat(other_hdr,buf);
+            strcat(other_hdr,buf); /* 다른 헤더들은 그대로 전송*/
         }
     }
-    if(strlen(host_hdr)==0)
+    if(strlen(host_hdr)==0) /* 만약 호스트헤더가 없으면 호스트 헤더를 새로 생성*/
     {
         sprintf(host_hdr,host_hdr_format,hostname);
     }
@@ -169,16 +181,16 @@ void parse_uri(char *HTTP,char *method, char *hostname,char *pathname,int *port,
     
     char* pos = strstr(HTTP," ");
     *pos = '\0';
-    sscanf(HTTP,"%s",method);
+    sscanf(HTTP,"%s",method); /* method 분리*/
     pos++;
 
     char* pos4 = strstr(pos," ");
     *pos4 = '\0';
     sscanf(pos,"%s",uri);
     char* pos3 = strstr(pos,"//");
-    pos = pos3!=NULL? pos3+2:pos;
+    pos = pos3!=NULL? pos3+2:pos; /* :// 를 이용해서 있으면 분리 없으면 그대로*/
 
-    char* pos2 = strstr(pos,":");
+    char* pos2 = strstr(pos,":"); /* : 를 이용해서 포트와 호스트네임 path를 분리 */
     if(pos2!=NULL)
     {
         *pos2 = '\0';
@@ -229,6 +241,10 @@ void format_log_entry(char *logstring, struct sockaddr_in *sockaddr,
      * returns a pointer to a static variable (Ch 13, CS:APP).
      */
 
+
+    /* 
+     * sockect_in을 사용해서 로그 출력
+     */
     if ((hp = gethostbyname(hostname)) == NULL)
         return ;
     sockaddr->sin_family = AF_INET;
